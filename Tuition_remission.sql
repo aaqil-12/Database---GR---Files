@@ -306,4 +306,59 @@ join Academic_Enrollment i on i.Enrollment_ID = o.Enrollment_ID
 join Academic_Program k on k.MAJR_CODE = o.MAJR_CODE
 where r.SPRIDEN_ID = '80837772';              
 
+-- testing the split appointment
+SELECT 
+    r.SPRIDEN_ID AS ID,
+    r.Lastname   AS Last_Name,
+    r.Firstname  AS First_Name,
+    r.LEVL_CODE  AS Level,
+    k.MAJR_DESC  AS Major,
+    k.COLL_DESC  AS College,
+    u.MinStart_Date        AS Term_of_Enrollment,
+    i.Total_Enrolled_hours AS Hours_Enrolled,
+    i.OVERALL_LGPA_GPA_FIX AS GPA,
+    t.Percent_Time_Attribute AS Percent_Time_Attribute
+
+FROM Tuition_Remission_Fact o
+JOIN Student r 
+    ON r.SPRIDEN_ID = o.SPRIDEN_ID
+JOIN Academic_Program k 
+    ON k.MAJR_CODE = o.MAJR_CODE
+JOIN Academic_Enrollment i 
+    ON i.Enrollment_ID = o.Enrollment_ID
+JOIN Employment_Period u 
+    ON u.Employment_Period_ID = o.Employment_Period_ID
+JOIN Employment t 
+    ON t.Employment_ID = u.Employment_ID
+
+WHERE (i.OVERALL_LGPA_GPA_FIX >= 3.0 OR i.OVERALL_LGPA_GPA_FIX = 0)
+
+  -- Allowed TA job codes
+  AND t.JobCode IN ('10062','10064','10074','10091')
+
+  -- Total percent time for this student must be >= 50
+  AND (
+        SELECT SUM(CAST(e2.Percent_Time_Attribute AS DECIMAL(5,2)))
+        FROM Employment e2
+        WHERE e2.SPRIDEN_ID = r.SPRIDEN_ID
+      ) >= 50.0
+
+  -- Employment period rule
+  AND u.MinStart_Date = '2025-09-01'
+  AND u.MaxEnd_Date >= '2026-01-15'
+
+  -- Enrollment rules: 9 hrs OR 3 hrs + thesis hours
+  AND (
+        i.Total_Enrolled_hours = 9
+     OR (
+            i.Total_Enrolled_hours = 3 AND (
+                i.EnrolledCourse_1 LIKE '%6398%' OR i.EnrolledCourse_1 LIKE '%6399%' OR
+                i.EnrolledCourse_2 LIKE '%6398%' OR i.EnrolledCourse_2 LIKE '%6399%' OR
+                i.EnrolledCourse_3 LIKE '%6398%' OR i.EnrolledCourse_3 LIKE '%6399%' OR
+                i.EnrolledCourse_4 LIKE '%6398%' OR i.EnrolledCourse_4 LIKE '%6399%' OR
+                i.EnrolledCourse_5 LIKE '%6398%' OR i.EnrolledCourse_5 LIKE '%6399%' OR
+                i.EnrolledCourse_6 LIKE '%6398%' OR i.EnrolledCourse_6 LIKE '%6399%'
+            )
+        )
+      );
 
