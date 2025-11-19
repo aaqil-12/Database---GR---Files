@@ -1,0 +1,27 @@
+SELECT
+    s.SPRIDEN_ID AS ID,
+    s.Lastname,
+    s.Firstname,
+    s.LEVL_CODE AS [Level],
+    p.MAJR_CODE AS Major,
+    p.COLL_DESC AS College,
+    e.Percent_Time_Attribute,
+    ep.MinStart_Date AS Term_Start,
+    ep.MaxEnd_Date AS Term_End,
+    en.Total_Enrolled_hours AS Hours_Enrolled,
+    en.OVERALL_LGPA_GPA_FIX AS GPA
+FROM
+    (
+        (
+            (
+                (
+                    Student AS s
+                    INNER JOIN Employment AS e ON s.SPRIDEN_ID = e.SPRIDEN_ID
+                )
+                INNER JOIN Employment_Period AS ep ON e.Employment_ID = ep.Employment_ID
+            )
+            INNER JOIN Tuition_Remission_Fact AS f ON ep.Employment_Period_ID = f.Employment_Period_ID
+        )
+        INNER JOIN Academic_Enrollment AS en ON f.Enrollment_ID = en.Enrollment_ID
+    )
+    INNER JOIN Academic_Program AS p ON p.MAJR_CODE = f.MAJR_CODE;
