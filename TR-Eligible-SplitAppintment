@@ -1,0 +1,62 @@
+SELECT
+    r.SPRIDEN_ID AS ID,
+    r.Lastname AS Last_Name,
+    r.Firstname AS First_Name,
+    r.LEVL_CODE AS Student_Level,
+    k.MAJR_DESC AS Major,
+    k.COLL_DESC AS College,
+    u.MinStart_Date AS Term_of_Enrollment,
+    i.Total_Enrolled_hours AS Hours_Enrolled,
+    i.OVERALL_LGPA_GPA_FIX AS GPA,
+    t.Percent_Time_Attribute AS Percent_Time_Attribute
+FROM
+    (
+        (
+            (
+                (
+                    Tuition_Remission_Fact AS o
+                    INNER JOIN Student AS r ON r.SPRIDEN_ID = o.SPRIDEN_ID
+                )
+                INNER JOIN Academic_Program AS k ON k.MAJR_CODE = o.MAJR_CODE
+            )
+            INNER JOIN Academic_Enrollment AS i ON i.Enrollment_ID = o.Enrollment_ID
+        )
+        INNER JOIN Employment_Period AS u ON u.Employment_Period_ID = o.Employment_Period_ID
+    )
+    INNER JOIN Employment AS t ON t.Employment_ID = u.Employment_ID
+WHERE
+    (
+        i.OVERALL_LGPA_GPA_FIX >= 3.0
+        OR i.OVERALL_LGPA_GPA_FIX = 0
+    )
+    AND t.JobCode IN ('10062', '10064', '10074', '10091')
+    AND (
+        SELECT
+            SUM(CDbl (e2.Percent_Time_Attribute))
+        FROM
+            Employment AS e2
+        WHERE
+            e2.SPRIDEN_ID = r.SPRIDEN_ID
+    ) >= 50
+    AND u.MinStart_Date = #09 / 01 / 2025 #
+    AND u.MaxEnd_Date >= #01 / 15 / 2026 #
+    AND (
+        i.Total_Enrolled_hours = 9
+        OR (
+            i.Total_Enrolled_hours = 3
+            AND (
+                i.EnrolledCourse_1 LIKE '*6398*'
+                OR i.EnrolledCourse_1 LIKE '*6399*'
+                OR i.EnrolledCourse_2 LIKE '*6398*'
+                OR i.EnrolledCourse_2 LIKE '*6399*'
+                OR i.EnrolledCourse_3 LIKE '*6398*'
+                OR i.EnrolledCourse_3 LIKE '*6399*'
+                OR i.EnrolledCourse_4 LIKE '*6398*'
+                OR i.EnrolledCourse_4 LIKE '*6399*'
+                OR i.EnrolledCourse_5 LIKE '*6398*'
+                OR i.EnrolledCourse_5 LIKE '*6399*'
+                OR i.EnrolledCourse_6 LIKE '*6398*'
+                OR i.EnrolledCourse_6 LIKE '*6399*'
+            )
+        )
+    );
