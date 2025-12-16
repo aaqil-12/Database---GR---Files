@@ -1,0 +1,933 @@
+
+#Tutiion Remisison Query - 1
+
+
+WITH base AS (
+  SELECT
+    p.ID AS emp_spriden_id,
+    p.SemestersinProgramS26,
+
+    r.Firstname,
+    r.Lastname,
+    r.LEVL_CODE,
+
+    t.Employment_ID,
+    t.SPRIDEN_ID AS SPRIDEN_ID_Employment,
+    t.EmplID,
+    t.JobCode,
+    t.Title,
+    t.Percent_Time_Attribute,
+    t.CostCenter_Project_1,
+    t.CostCenter_Project_2,
+    t.CostCenter_Project_3,
+    t.BREAK_IN_APPT,
+
+    k.MAJR_CODE,
+    k.MAJR_DESC,
+    k.COLL_DESC,
+
+    u.MinStart_Date,
+    u.MaxEnd_Date,
+
+    i.Graduation_Application_Y_N,
+    i.OVERALL_LGPA_GPA_FIX,
+    i.Total_Enrolled_hours,
+    i.EnrolledCourses,
+
+    CASE
+      WHEN k.COLL_DESC LIKE '%Business%' THEN 'Business'
+      WHEN k.COLL_DESC LIKE '%Health%'  THEN 'Health Sciences'
+      WHEN k.COLL_DESC LIKE '%Nurs%'    THEN 'Nursing'
+      WHEN k.COLL_DESC LIKE '%Pharm%'   THEN 'School of Pharmacy'
+      ELSE 'All Other Colleges'
+    END AS rate_college,
+
+    ROW_NUMBER() OVER (
+      PARTITION BY p.ID
+      ORDER BY (u.MaxEnd_Date IS NULL) ASC, u.MaxEnd_Date DESC
+    ) AS rn
+
+  FROM tuition_remission_subset p
+  LEFT JOIN Student r ON r.SPRIDEN_ID = p.ID
+  LEFT JOIN Employment t ON t.SPRIDEN_ID = r.SPRIDEN_ID
+  LEFT JOIN Employment_Period u ON u.Employment_ID = t.Employment_ID
+  LEFT JOIN Tuition_Remission_Fact o ON o.Employment_Period_ID = u.Employment_Period_ID
+  LEFT JOIN Academic_Enrollment i ON i.Enrollment_ID = o.Enrollment_ID
+  LEFT JOIN Academic_Program k ON k.MAJR_CODE = o.MAJR_CODE
+),
+
+flags AS (
+  SELECT
+    b.*,
+
+    (b.MAJR_CODE = 'CRWR') AS is_crwr,
+
+    (b.OVERALL_LGPA_GPA_FIX IS NOT NULL
+      AND (b.OVERALL_LGPA_GPA_FIX >= 3.0 OR b.OVERALL_LGPA_GPA_FIX = 0)
+    ) AS gpa_ok,
+
+    (
+      b.MAJR_CODE = 'CRWR'
+      OR (b.JobCode IS NOT NULL AND b.JobCode IN ('10062','10064','10074','10091'))
+    ) AS job_ok,
+
+    (b.Percent_Time_Attribute IS NOT NULL AND b.Percent_Time_Attribute <= 50) AS pct_ok,
+
+    (b.MinStart_Date IS NOT NULL AND b.MinStart_Date IN ('2025-09-01','2026-01-16')) AS minstart_ok,
+
+    (b.MaxEnd_Date IS NOT NULL AND b.MaxEnd_Date >= '2026-01-15') AS maxend_ok,
+
+    (
+      b.Total_Enrolled_hours IS NOT NULL AND
+      (
+        b.Total_Enrolled_hours = 9
+        OR (b.Total_Enrolled_hours = 3 AND IFNULL(b.EnrolledCourses,'') LIKE '%Y%')
+      )
+    ) AS enroll_ok
+  FROM base b
+),
+
+final AS (
+  SELECT
+    f.*,
+
+    CASE
+      WHEN f.SemestersinProgramS26 = 11 THEN 'N'
+      WHEN f.gpa_ok=1 AND f.job_ok=1 AND f.pct_ok=1
+           AND f.minstart_ok=1 AND f.maxend_ok=1 AND f.enroll_ok=1
+      THEN 'Y'
+      ELSE 'N'
+    END AS Eligible_YN,
+
+    CASE
+      WHEN f.SemestersinProgramS26 = 11 THEN 'Semester 11 not eligible'
+      WHEN f.gpa_ok=1 AND f.job_ok=1 AND f.pct_ok=1
+           AND f.minstart_ok=1 AND f.maxend_ok=1 AND f.enroll_ok=1
+      THEN 'Eligible'
+      ELSE CONCAT_WS(', ',
+        IF(f.gpa_ok=0, 'GPA not eligible / missing', NULL),
+        IF(f.job_ok=0, 'JobCode not eligible / missing', NULL),
+        IF(f.pct_ok=0, 'Percent time > 50 or missing', NULL),
+        IF(f.minstart_ok=0, 'MinStart_Date not valid / missing', NULL),
+        IF(f.maxend_ok=0, 'MaxEnd_Date before 2026-01-15 / missing', NULL),
+        IF(f.enroll_ok=0, 'Enrollment hours/courses not eligible / missing', NULL)
+      )
+    END AS Reason
+  FROM flags f
+)
+
+SELECT
+  -- ✅ EXACT columns you requested
+  fin.emp_spriden_id              AS SPRIDEN_ID,
+  fin.Firstname,
+  fin.Lastname,
+  fin.LEVL_CODE,
+
+  fin.Employment_ID,
+  fin.SPRIDEN_ID_Employment,
+  fin.EmplID,
+  fin.JobCode,
+  fin.Title,
+  fin.Percent_Time_Attribute,
+  fin.CostCenter_Project_1,
+  fin.CostCenter_Project_2,
+  fin.CostCenter_Project_3,
+  fin.BREAK_IN_APPT,
+
+  fin.MAJR_CODE,
+  fin.MAJR_DESC,
+  fin.COLL_DESC,
+
+  fin.SemestersinProgramS26,
+  fin.MinStart_Date,
+  fin.MaxEnd_Date,
+  fin.Graduation_Application_Y_N,
+  fin.OVERALL_LGPA_GPA_FIX,
+  fin.Total_Enrolled_hours,
+  fin.EnrolledCourses,
+
+  fin.Eligible_YN,
+  fin.Reason,
+
+  CASE
+    WHEN fin.Eligible_YN = 'Y' THEN COALESCE(r.Value, 0)
+    ELSE 0
+  END AS Tuition_Paid
+
+FROM final fin
+LEFT JOIN tuition_remission_rates r
+  ON TRIM(r.Term) = 'Spring 2026'
+ AND TRIM(r.Type) = 'Resident'
+ AND r.Hours = fin.Total_Enrolled_hours
+ AND TRIM(r.College) = TRIM(fin.rate_college)
+
+WHERE fin.rn = 1
+ORDER BY fin.emp_spriden_id;
+
+
+
+#Tutiion Remisison Query - 2
+
+WITH v AS (
+    SELECT
+        t.SPRIDEN_ID AS emp_spriden_id,
+        r.Firstname,
+        r.Lastname,
+        r.LEVL_CODE,
+
+        -- Employment columns
+        t.Employment_ID,
+        t.SPRIDEN_ID AS employment_spriden_id,
+        t.EmplID,
+        t.JobCode,
+        t.Title,
+        t.Percent_Time_Attribute,
+        t.CostCenter_Project_1,
+        t.CostCenter_Project_2,
+        t.CostCenter_Project_3,
+        t.BREAK_IN_APPT,
+
+        -- Program columns
+        k.MAJR_CODE,
+        k.MAJR_DESC,
+        k.COLL_DESC,
+
+        -- Period + Enrollment
+        u.MinStart_Date,
+        u.MaxEnd_Date,
+        i.Graduation_Application_Y_N,
+        i.OVERALL_LGPA_GPA_FIX,
+        i.Total_Enrolled_hours,
+        i.EnrolledCourses
+    FROM Student r
+    JOIN Employment t
+        ON t.SPRIDEN_ID = r.SPRIDEN_ID
+    JOIN Employment_Period u
+        ON u.Employment_ID = t.Employment_ID
+    JOIN Tuition_Remission_Fact o
+        ON o.Employment_Period_ID = u.Employment_Period_ID
+    JOIN Academic_Enrollment i
+        ON i.Enrollment_ID = o.Enrollment_ID
+    JOIN Academic_Program k
+        ON k.MAJR_CODE = o.MAJR_CODE
+),
+
+agg AS (
+    SELECT
+        emp_spriden_id,
+        COUNT(*) AS v_row_count,
+        MAX(CASE WHEN BREAK_IN_APPT = 'YES' THEN 1 ELSE 0 END) AS v_has_break_yes
+    FROM v
+    GROUP BY emp_spriden_id
+),
+
+vr AS (
+    SELECT
+        v.*,
+        a.v_row_count,
+        a.v_has_break_yes,
+
+        -- flags (for Reason + eligibility)
+        (v.MAJR_CODE = 'CRWR') AS is_crwr,
+
+        (v.OVERALL_LGPA_GPA_FIX IS NOT NULL
+          AND (v.OVERALL_LGPA_GPA_FIX >= 3.0 OR v.OVERALL_LGPA_GPA_FIX = 0)
+        ) AS gpa_ok,
+
+        (v.JobCode IS NOT NULL AND v.JobCode IN ('10062','10064','10074','10091')) AS job_ok,
+
+        (v.Percent_Time_Attribute IS NOT NULL AND v.Percent_Time_Attribute <= 50) AS pct_ok,
+
+        (v.MinStart_Date IS NOT NULL AND v.MinStart_Date IN ('2025-09-01','2026-01-16')) AS minstart_ok,
+
+        (v.MaxEnd_Date IS NOT NULL AND v.MaxEnd_Date >= '2026-01-15') AS maxend_ok,
+
+        (
+          v.Total_Enrolled_hours IS NOT NULL AND
+          (
+            v.Total_Enrolled_hours = 9
+            OR (v.Total_Enrolled_hours = 3 AND IFNULL(v.EnrolledCourses,'') LIKE '%Y%')
+          )
+        ) AS enroll_ok,
+
+        -- ✅ ALL conditions together (CRWR waives JobCode check)
+        CASE
+          WHEN
+            (v.OVERALL_LGPA_GPA_FIX IS NOT NULL AND (v.OVERALL_LGPA_GPA_FIX >= 3.0 OR v.OVERALL_LGPA_GPA_FIX = 0))
+            AND (
+              v.MAJR_CODE = 'CRWR'
+              OR (v.JobCode IS NOT NULL AND v.JobCode IN ('10062','10064','10074','10091'))
+            )
+            AND v.Percent_Time_Attribute IS NOT NULL AND v.Percent_Time_Attribute <= 50
+            AND v.MinStart_Date IS NOT NULL AND v.MinStart_Date IN ('2025-09-01','2026-01-16')
+            AND v.MaxEnd_Date IS NOT NULL AND v.MaxEnd_Date >= '2026-01-15'
+            AND v.Total_Enrolled_hours IS NOT NULL
+            AND (
+              v.Total_Enrolled_hours = 9
+              OR (v.Total_Enrolled_hours = 3 AND IFNULL(v.EnrolledCourses,'') LIKE '%Y%')
+            )
+          THEN 1 ELSE 0
+        END AS eligible_core,
+
+        -- college bucket for rates table
+        CASE
+          WHEN v.COLL_DESC LIKE '%Business%' THEN 'Business'
+          WHEN v.COLL_DESC LIKE '%Health%'  THEN 'Health Sciences'
+          WHEN v.COLL_DESC LIKE '%Nurs%'    THEN 'Nursing'
+          WHEN v.COLL_DESC LIKE '%Pharm%'   THEN 'School of Pharmacy'
+          ELSE 'All Other Colleges'
+        END AS rate_college,
+
+        -- ✅ important: for dup + NO break, prefer an eligible row
+        ROW_NUMBER() OVER (
+            PARTITION BY v.emp_spriden_id
+            ORDER BY
+                CASE
+                  WHEN IFNULL(a.v_row_count,0) > 1 AND IFNULL(a.v_has_break_yes,0) = 0
+                    THEN eligible_core
+                  ELSE 0
+                END DESC,
+                (v.MaxEnd_Date IS NULL) ASC, v.MaxEnd_Date DESC,
+                (v.MinStart_Date IS NULL) ASC, v.MinStart_Date DESC,
+                v.Employment_ID DESC
+        ) AS rn
+    FROM v
+    LEFT JOIN agg a
+      ON a.emp_spriden_id = v.emp_spriden_id
+),
+
+picked AS (
+    SELECT
+        p.ID AS subset_id,
+        p.SemestersinProgramS26 AS SemestersinProgramS26,
+        vr.*
+    FROM tuition_remission_subset p
+    LEFT JOIN vr
+        ON vr.emp_spriden_id = p.ID
+    WHERE
+        -- If duplicates AND has YES -> keep ALL rows
+        (IFNULL(vr.v_row_count,0) > 1 AND IFNULL(vr.v_has_break_yes,0) = 1)
+        OR
+        -- Else -> keep only 1 row; if dup+NO prefers eligible_core
+        (NOT (IFNULL(vr.v_row_count,0) > 1 AND IFNULL(vr.v_has_break_yes,0) = 1)
+         AND (vr.rn = 1 OR vr.rn IS NULL))
+),
+
+final AS (
+    SELECT
+        pk.*,
+
+        -- semester block
+        (pk.SemestersinProgramS26 IS NOT NULL AND pk.SemestersinProgramS26 = 11) AS sem11_block,
+
+        CASE
+          WHEN pk.emp_spriden_id IS NULL THEN 'N'
+          WHEN pk.SemestersinProgramS26 IS NULL THEN 'N'
+          WHEN pk.SemestersinProgramS26 = 11 THEN 'N'
+          WHEN pk.eligible_core = 1 THEN 'Y'
+          ELSE 'N'
+        END AS Eligible_YN,
+
+        CASE
+          WHEN pk.emp_spriden_id IS NULL THEN 'No matching rows in joined tables'
+          WHEN pk.SemestersinProgramS26 IS NULL THEN 'Semester in program is missing'
+          WHEN pk.SemestersinProgramS26 = 11 THEN 'Semester 11 not eligible'
+          WHEN pk.eligible_core = 1 THEN 'Eligible'
+          ELSE CONCAT_WS(', ',
+            IF(pk.gpa_ok=0,      'GPA not eligible / missing', NULL),
+            IF(pk.is_crwr=0 AND pk.job_ok=0, 'JobCode not eligible / missing', NULL),
+            IF(pk.pct_ok=0,      'Percent time > 50 or missing', NULL),
+            IF(pk.minstart_ok=0, 'MinStart_Date not 2025-09-01 or 2026-01-16 / missing', NULL),
+            IF(pk.maxend_ok=0,   'MaxEnd_Date before 2026-01-15 / missing', NULL),
+            IF(pk.enroll_ok=0,   'Enrollment hours/courses not eligible / missing', NULL)
+          )
+        END AS Reason
+    FROM picked pk
+)
+
+SELECT
+    fin.emp_spriden_id AS SPRIDEN_ID,
+    fin.Firstname,
+    fin.Lastname,
+    fin.LEVL_CODE,
+
+    fin.Employment_ID,
+    fin.employment_spriden_id AS SPRIDEN_ID_Employment,
+    fin.EmplID,
+    fin.JobCode,
+    fin.Title,
+    fin.Percent_Time_Attribute,
+    fin.CostCenter_Project_1,
+    fin.CostCenter_Project_2,
+    fin.CostCenter_Project_3,
+    fin.BREAK_IN_APPT,
+
+    fin.MAJR_CODE,
+    fin.MAJR_DESC,
+    fin.COLL_DESC,
+
+    fin.SemestersinProgramS26,
+
+    fin.MinStart_Date,
+    fin.MaxEnd_Date,
+    fin.Graduation_Application_Y_N,
+    fin.OVERALL_LGPA_GPA_FIX,
+    fin.Total_Enrolled_hours,
+    fin.EnrolledCourses,
+
+    fin.Eligible_YN,
+    fin.Reason,
+
+    CASE
+      WHEN fin.Eligible_YN = 'Y' THEN COALESCE(r.Value, 0)
+      ELSE 0
+    END AS Tuition_Paid
+
+FROM final fin
+LEFT JOIN tuition_remission_rates r
+  ON TRIM(r.Term) = 'Spring 2026'
+ AND TRIM(r.Type) = 'Resident'
+ AND r.Hours = fin.Total_Enrolled_hours
+ AND TRIM(r.College) = TRIM(
+      CASE
+        WHEN fin.rate_college IN ('Business','Health Sciences','Nursing','School of Pharmacy')
+          THEN fin.rate_college
+        ELSE 'All Other Colleges'
+      END
+ )
+ORDER BY fin.emp_spriden_id, fin.MaxEnd_Date DESC;
+
+#Tutiion Waiver Query - 1
+
+WITH base AS (
+    SELECT
+        r.SPRIDEN_ID,
+        r.Firstname,
+        r.Lastname,
+        r.LEVL_CODE,
+
+        -- Employment
+        t.Employment_ID,
+        t.EmplID,
+        t.JobCode,
+        t.Title,
+        t.Percent_Time_Attribute,
+        t.CostCenter_Project_1,
+        t.CostCenter_Project_2,
+        t.CostCenter_Project_3,
+        t.BREAK_IN_APPT,
+
+        -- Program
+        k.MAJR_CODE,
+        k.MAJR_DESC,
+        k.COLL_DESC,
+
+        -- Period + Enrollment
+        u.MinStart_Date,
+        u.MaxEnd_Date,
+        i.Graduation_Application_Y_N,
+        i.OVERALL_LGPA_GPA_FIX,
+        i.Total_Enrolled_hours,
+        i.EnrolledCourses
+    FROM Student r
+    LEFT JOIN Employment t
+        ON t.SPRIDEN_ID = r.SPRIDEN_ID
+    LEFT JOIN Employment_Period u
+        ON u.Employment_ID = t.Employment_ID
+    LEFT JOIN Tuition_Remission_Fact o
+        ON o.Employment_Period_ID = u.Employment_Period_ID
+    LEFT JOIN Academic_Enrollment i
+        ON i.Enrollment_ID = o.Enrollment_ID
+    LEFT JOIN Academic_Program k
+        ON k.MAJR_CODE = o.MAJR_CODE
+),
+flags AS (
+    SELECT
+        b.*,
+
+        -- NULL checks (explicit)
+        (b.Employment_ID IS NOT NULL) AS has_employment,
+        (b.MinStart_Date IS NOT NULL) AS has_minstart,
+        (b.MaxEnd_Date IS NOT NULL)   AS has_maxend,
+        (b.OVERALL_LGPA_GPA_FIX IS NOT NULL) AS has_gpa,
+        (b.Total_Enrolled_hours IS NOT NULL) AS has_hours,
+        (b.MAJR_CODE IS NOT NULL) AS has_major,
+
+        -- Rule checks (JobCode condition REMOVED)
+        (b.MAJR_CODE <> 'CRWR') AS major_ok,
+
+        (b.OVERALL_LGPA_GPA_FIX IS NOT NULL AND (b.OVERALL_LGPA_GPA_FIX >= 3.0 OR b.OVERALL_LGPA_GPA_FIX = 0)) AS gpa_ok,
+
+        (b.Percent_Time_Attribute IS NOT NULL AND b.Percent_Time_Attribute <= 50) AS pct_ok,
+
+        (b.MinStart_Date IS NOT NULL AND b.MinStart_Date = '2025-09-01') AS minstart_ok,
+
+        (b.MaxEnd_Date IS NOT NULL AND b.MaxEnd_Date >= '2026-01-15') AS maxend_ok,
+
+        (
+          b.Total_Enrolled_hours IS NOT NULL AND
+          (
+            b.Total_Enrolled_hours = 9
+            OR (
+              b.Total_Enrolled_hours = 3
+              AND IFNULL(b.EnrolledCourses,'') LIKE '%Y%'
+            )
+          )
+        ) AS enroll_ok
+
+    FROM base b
+)
+
+SELECT
+    f.SPRIDEN_ID,
+    f.Firstname,
+    f.Lastname,
+    f.LEVL_CODE,
+
+    f.Employment_ID,
+    f.EmplID,
+    f.JobCode,
+    f.Title,
+    f.Percent_Time_Attribute,
+    f.CostCenter_Project_1,
+    f.CostCenter_Project_2,
+    f.CostCenter_Project_3,
+    f.BREAK_IN_APPT,
+
+    f.MAJR_CODE,
+    f.MAJR_DESC,
+    f.COLL_DESC,
+
+    f.MinStart_Date,
+    f.MaxEnd_Date,
+    f.Graduation_Application_Y_N,
+    f.OVERALL_LGPA_GPA_FIX,
+    f.Total_Enrolled_hours,
+    f.EnrolledCourses,
+
+    -- Eligible: NO jobcode rule, but CRWR excluded
+    CASE
+        WHEN f.has_employment = 0 THEN 'N'
+        WHEN f.has_major = 0 THEN 'N'
+        WHEN f.MAJR_CODE = 'CRWR' THEN 'N'
+        WHEN f.gpa_ok=1 AND f.pct_ok=1 AND f.minstart_ok=1 AND f.maxend_ok=1 AND f.enroll_ok=1 THEN 'Y'
+        ELSE 'N'
+    END AS Eligible_YN,
+
+    CASE
+        WHEN (
+            f.has_employment = 1
+            AND f.has_major = 1
+            AND f.MAJR_CODE <> 'CRWR'
+            AND f.gpa_ok=1 AND f.pct_ok=1 AND f.minstart_ok=1 AND f.maxend_ok=1 AND f.enroll_ok=1
+        ) THEN NULL
+        ELSE CONCAT_WS(', ',
+            IF(f.has_employment=0, 'Missing Employment row', NULL),
+            IF(f.has_major=0, 'Major code is null', NULL),
+            IF(f.has_major=1 AND f.MAJR_CODE='CRWR', 'Creative Writing major (CRWR) not eligible for waiver', NULL),
+
+            IF(f.has_gpa=0, 'GPA is null', NULL),
+            IF(f.has_gpa=1 AND f.gpa_ok=0, 'GPA not eligible', NULL),
+
+            IF(f.Percent_Time_Attribute IS NULL, 'percent_time_attribute is null', NULL),
+            IF(f.Percent_Time_Attribute IS NOT NULL AND f.pct_ok=0, 'percent time > 50', NULL),
+
+            IF(f.has_minstart=0, 'minstart_date is null', NULL),
+            IF(f.has_minstart=1 AND f.minstart_ok=0, 'min start date not 2025-09-01', NULL),
+
+            IF(f.has_maxend=0, 'maxend_date is null', NULL),
+            IF(f.has_maxend=1 AND f.maxend_ok=0, 'max end date before 2026-01-15', NULL),
+
+            IF(f.has_hours=0, 'total_enrolled_hours is null', NULL),
+            IF(f.has_hours=1 AND f.enroll_ok=0, 'hours/course pattern not satisfied', NULL),
+
+            IF(f.Total_Enrolled_hours = 3 AND f.EnrolledCourses IS NULL, 'no enrolled course values present', NULL)
+        )
+    END AS Reason
+
+FROM flags f
+ORDER BY f.SPRIDEN_ID, f.MaxEnd_Date DESC, f.MinStart_Date DESC, f.Employment_ID DESC;
+
+
+
+
+
+#Tuition Waiver Query - 2 
+
+WITH v AS (
+    SELECT
+        r.SPRIDEN_ID AS person_id,
+        r.Firstname,
+        r.Lastname,
+        r.LEVL_CODE,
+
+        -- Employment columns
+        t.Employment_ID,
+        t.SPRIDEN_ID AS employment_spriden_id,
+        t.EmplID,
+        t.JobCode,
+        t.Title,
+        t.Percent_Time_Attribute,
+        t.CostCenter_Project_1,
+        t.CostCenter_Project_2,
+        t.CostCenter_Project_3,
+        t.BREAK_IN_APPT,
+
+        -- Program columns
+        k.MAJR_CODE,
+        k.MAJR_DESC,
+        k.COLL_DESC,
+
+        -- Period + Enrollment
+        u.MinStart_Date,
+        u.MaxEnd_Date,
+        i.Graduation_Application_Y_N,
+        i.OVERALL_LGPA_GPA_FIX,
+        i.Total_Enrolled_hours,
+        i.EnrolledCourses,
+
+        -- Subset info (exists for some students only)
+        p.SemestersinProgramS26
+    FROM Student r
+    LEFT JOIN Employment t
+        ON t.SPRIDEN_ID = r.SPRIDEN_ID
+    LEFT JOIN Employment_Period u
+        ON u.Employment_ID = t.Employment_ID
+    LEFT JOIN Tuition_Remission_Fact o
+        ON o.Employment_Period_ID = u.Employment_Period_ID
+    LEFT JOIN Academic_Enrollment i
+        ON i.Enrollment_ID = o.Enrollment_ID
+    LEFT JOIN Academic_Program k
+        ON k.MAJR_CODE = o.MAJR_CODE
+    LEFT JOIN tuition_remission_subset p
+        ON p.ID = r.SPRIDEN_ID
+),
+
+agg AS (
+    SELECT
+        person_id,
+        COUNT(*) AS v_row_count,
+        MAX(CASE WHEN BREAK_IN_APPT = 'YES' THEN 1 ELSE 0 END) AS v_has_break_yes
+    FROM v
+    GROUP BY person_id
+),
+
+vr AS (
+    SELECT
+        v.*,
+        a.v_row_count,
+        a.v_has_break_yes,
+
+        -- flags for reason
+        (v.MAJR_CODE = 'CRWR') AS is_crwr,
+
+        (v.OVERALL_LGPA_GPA_FIX IS NOT NULL
+          AND (v.OVERALL_LGPA_GPA_FIX >= 3.0 OR v.OVERALL_LGPA_GPA_FIX = 0)
+        ) AS gpa_ok,
+
+        (v.Percent_Time_Attribute IS NOT NULL AND v.Percent_Time_Attribute <= 50) AS pct_ok,
+
+        (v.MinStart_Date IS NOT NULL AND v.MinStart_Date IN ('2025-09-01','2026-01-16')) AS minstart_ok,
+
+        (v.MaxEnd_Date IS NOT NULL AND v.MaxEnd_Date >= '2026-01-15') AS maxend_ok,
+
+        (
+          v.Total_Enrolled_hours IS NOT NULL AND
+          (
+            v.Total_Enrolled_hours = 9
+            OR (v.Total_Enrolled_hours = 3 AND IFNULL(v.EnrolledCourses,'') LIKE '%Y%')
+          )
+        ) AS enroll_ok,
+
+        -- Waiver core eligibility (NO jobcode restriction, CRWR NOT eligible)
+        CASE
+          WHEN
+            v.MAJR_CODE IS NOT NULL
+            AND v.MAJR_CODE <> 'CRWR'
+            AND (v.OVERALL_LGPA_GPA_FIX IS NOT NULL AND (v.OVERALL_LGPA_GPA_FIX >= 3.0 OR v.OVERALL_LGPA_GPA_FIX = 0))
+            AND v.Percent_Time_Attribute IS NOT NULL AND v.Percent_Time_Attribute <= 50
+            AND v.MinStart_Date IS NOT NULL AND v.MinStart_Date IN ('2025-09-01','2026-01-16')
+            AND v.MaxEnd_Date IS NOT NULL AND v.MaxEnd_Date >= '2026-01-15'
+            AND v.Total_Enrolled_hours IS NOT NULL
+            AND (
+              v.Total_Enrolled_hours = 9
+              OR (v.Total_Enrolled_hours = 3 AND IFNULL(v.EnrolledCourses,'') LIKE '%Y%')
+            )
+          THEN 1 ELSE 0
+        END AS waiver_eligible_core,
+
+        -- college bucket for rates table
+        CASE
+          WHEN v.COLL_DESC LIKE '%Business%' THEN 'Business'
+          WHEN v.COLL_DESC LIKE '%Health%'  THEN 'Health Sciences'
+          WHEN v.COLL_DESC LIKE '%Nurs%'    THEN 'Nursing'
+          WHEN v.COLL_DESC LIKE '%Pharm%'   THEN 'School of Pharmacy'
+          ELSE 'All Other Colleges'
+        END AS rate_college,
+
+        -- rank: for dup + NO break, prefer waiver-eligible row
+        ROW_NUMBER() OVER (
+            PARTITION BY v.person_id
+            ORDER BY
+                CASE
+                  WHEN IFNULL(a.v_row_count,0) > 1 AND IFNULL(a.v_has_break_yes,0) = 0
+                    THEN waiver_eligible_core
+                  ELSE 0
+                END DESC,
+                (v.MaxEnd_Date IS NULL) ASC, v.MaxEnd_Date DESC,
+                (v.MinStart_Date IS NULL) ASC, v.MinStart_Date DESC,
+                v.Employment_ID DESC
+        ) AS rn
+    FROM v
+    LEFT JOIN agg a
+      ON a.person_id = v.person_id
+),
+
+picked AS (
+    SELECT
+        vr.*
+    FROM vr
+    WHERE
+        -- If duplicates AND has YES -> keep ALL rows
+        (IFNULL(vr.v_row_count,0) > 1 AND IFNULL(vr.v_has_break_yes,0) = 1)
+        OR
+        -- Else -> keep only 1 row; if dup+NO prefers waiver eligible
+        (NOT (IFNULL(vr.v_row_count,0) > 1 AND IFNULL(vr.v_has_break_yes,0) = 1)
+         AND (vr.rn = 1))
+),
+
+final AS (
+    SELECT
+        pk.*,
+
+        -- semester 11 block (only applies if value exists)
+        (pk.SemestersinProgramS26 IS NOT NULL AND pk.SemestersinProgramS26 = 11) AS sem11_block,
+
+        CASE
+          WHEN pk.SemestersinProgramS26 IS NOT NULL AND pk.SemestersinProgramS26 = 11 THEN 'N'
+          WHEN pk.waiver_eligible_core = 1 THEN 'Y'
+          ELSE 'N'
+        END AS Waiver_Eligible_YN,
+
+        CASE
+          WHEN pk.SemestersinProgramS26 IS NOT NULL AND pk.SemestersinProgramS26 = 11 THEN 'Semester 11 not eligible'
+          WHEN pk.waiver_eligible_core = 1 THEN 'Eligible'
+          ELSE CONCAT_WS(', ',
+            IF(pk.MAJR_CODE IS NULL, 'Major code is missing', NULL),
+            IF(pk.MAJR_CODE = 'CRWR', 'CRWR not eligible for waiver', NULL),
+            IF(pk.gpa_ok=0,      'GPA not eligible / missing', NULL),
+            IF(pk.pct_ok=0,      'Percent time > 50 or missing', NULL),
+            IF(pk.minstart_ok=0, 'MinStart_Date not 2025-09-01 or 2026-01-16 / missing', NULL),
+            IF(pk.maxend_ok=0,   'MaxEnd_Date before 2026-01-15 / missing', NULL),
+            IF(pk.enroll_ok=0,   'Enrollment hours/courses not eligible / missing', NULL)
+          )
+        END AS Waiver_Reason
+    FROM picked pk
+)
+
+SELECT
+    fin.person_id AS SPRIDEN_ID,
+    fin.Firstname,
+    fin.Lastname,
+    fin.LEVL_CODE,
+
+    fin.Employment_ID,
+    fin.employment_spriden_id AS SPRIDEN_ID_Employment,
+    fin.EmplID,
+    fin.JobCode,
+    fin.Title,
+    fin.Percent_Time_Attribute,
+    fin.CostCenter_Project_1,
+    fin.CostCenter_Project_2,
+    fin.CostCenter_Project_3,
+    fin.BREAK_IN_APPT,
+
+    fin.MAJR_CODE,
+    fin.MAJR_DESC,
+    fin.COLL_DESC,
+
+    fin.SemestersinProgramS26,
+
+    fin.MinStart_Date,
+    fin.MaxEnd_Date,
+    fin.Graduation_Application_Y_N,
+    fin.OVERALL_LGPA_GPA_FIX,
+    fin.Total_Enrolled_hours,
+    fin.EnrolledCourses,
+
+    fin.Waiver_Eligible_YN,
+    fin.Waiver_Reason,
+
+    CASE
+      WHEN fin.Waiver_Eligible_YN = 'Y' THEN COALESCE(r.Value, 0)
+      ELSE 0
+    END AS Tuition_Waived
+
+FROM final fin
+LEFT JOIN tuition_remission_rates r
+  ON TRIM(r.Term) = 'Spring 2026'
+ AND TRIM(r.Type) = 'Resident'
+ AND r.Hours = fin.Total_Enrolled_hours
+ AND TRIM(r.College) = TRIM(
+      CASE
+        WHEN fin.rate_college IN ('Business','Health Sciences','Nursing','School of Pharmacy')
+          THEN fin.rate_college
+        ELSE 'All Other Colleges'
+      END
+ )
+ORDER BY fin.person_id, fin.MaxEnd_Date DESC;
+
+
+-- Entire student population (Tuition Waiver)
+
+WITH base AS (
+    SELECT
+        r.SPRIDEN_ID,
+        r.Firstname,
+        r.Lastname,
+        r.LEVL_CODE,
+
+        -- Employment
+        t.Employment_ID,
+        t.EmplID,
+        t.JobCode,
+        t.Title,
+        t.Percent_Time_Attribute,
+        t.CostCenter_Project_1,
+        t.CostCenter_Project_2,
+        t.CostCenter_Project_3,
+        t.BREAK_IN_APPT,
+
+        -- Program
+        k.MAJR_CODE,
+        k.MAJR_DESC,
+        k.COLL_DESC,
+
+        -- Period + Enrollment
+        u.MinStart_Date,
+        u.MaxEnd_Date,
+        i.Graduation_Application_Y_N,
+        i.OVERALL_LGPA_GPA_FIX,
+        i.Total_Enrolled_hours,
+        i.EnrolledCourses
+    FROM Student r
+    LEFT JOIN Employment t
+        ON t.SPRIDEN_ID = r.SPRIDEN_ID
+    LEFT JOIN Employment_Period u
+        ON u.Employment_ID = t.Employment_ID
+    LEFT JOIN Tuition_Remission_Fact o
+        ON o.Employment_Period_ID = u.Employment_Period_ID
+    LEFT JOIN Academic_Enrollment i
+        ON i.Enrollment_ID = o.Enrollment_ID
+    LEFT JOIN Academic_Program k
+        ON k.MAJR_CODE = o.MAJR_CODE
+),
+flags AS (
+    SELECT
+        b.*,
+
+        -- NULL checks (explicit)
+        (b.Employment_ID IS NOT NULL) AS has_employment,
+        (b.MinStart_Date IS NOT NULL) AS has_minstart,
+        (b.MaxEnd_Date IS NOT NULL)   AS has_maxend,
+        (b.OVERALL_LGPA_GPA_FIX IS NOT NULL) AS has_gpa,
+        (b.Total_Enrolled_hours IS NOT NULL) AS has_hours,
+        (b.MAJR_CODE IS NOT NULL) AS has_major,
+
+        -- Rule checks (JobCode condition REMOVED)
+        (b.MAJR_CODE <> 'CRWR') AS major_ok,
+
+        (b.OVERALL_LGPA_GPA_FIX IS NOT NULL AND (b.OVERALL_LGPA_GPA_FIX >= 3.0 OR b.OVERALL_LGPA_GPA_FIX = 0)) AS gpa_ok,
+
+        (b.Percent_Time_Attribute IS NOT NULL AND b.Percent_Time_Attribute <= 50) AS pct_ok,
+
+        (b.MinStart_Date IS NOT NULL AND b.MinStart_Date = '2025-09-01') AS minstart_ok,
+
+        (b.MaxEnd_Date IS NOT NULL AND b.MaxEnd_Date >= '2026-01-15') AS maxend_ok,
+
+        (
+          b.Total_Enrolled_hours IS NOT NULL AND
+          (
+            b.Total_Enrolled_hours = 9
+            OR (
+              b.Total_Enrolled_hours = 3
+              AND IFNULL(b.EnrolledCourses,'') LIKE '%Y%'
+            )
+          )
+        ) AS enroll_ok
+
+    FROM base b
+)
+
+SELECT
+    f.SPRIDEN_ID,
+    f.Firstname,
+    f.Lastname,
+    f.LEVL_CODE,
+
+    f.Employment_ID,
+    f.EmplID,
+    f.JobCode,
+    f.Title,
+    f.Percent_Time_Attribute,
+    f.CostCenter_Project_1,
+    f.CostCenter_Project_2,
+    f.CostCenter_Project_3,
+    f.BREAK_IN_APPT,
+
+    f.MAJR_CODE,
+    f.MAJR_DESC,
+    f.COLL_DESC,
+
+    f.MinStart_Date,
+    f.MaxEnd_Date,
+    f.Graduation_Application_Y_N,
+    f.OVERALL_LGPA_GPA_FIX,
+    f.Total_Enrolled_hours,
+    f.EnrolledCourses,
+
+    -- Eligible: NO jobcode rule, but CRWR excluded
+    CASE
+        WHEN f.has_employment = 0 THEN 'N'
+        WHEN f.has_major = 0 THEN 'N'
+        WHEN f.MAJR_CODE = 'CRWR' THEN 'N'
+        WHEN f.gpa_ok=1 AND f.pct_ok=1 AND f.minstart_ok=1 AND f.maxend_ok=1 AND f.enroll_ok=1 THEN 'Y'
+        ELSE 'N'
+    END AS Eligible_YN,
+
+    CASE
+        WHEN (
+            f.has_employment = 1
+            AND f.has_major = 1
+            AND f.MAJR_CODE <> 'CRWR'
+            AND f.gpa_ok=1 AND f.pct_ok=1 AND f.minstart_ok=1 AND f.maxend_ok=1 AND f.enroll_ok=1
+        ) THEN NULL
+        ELSE CONCAT_WS(', ',
+            IF(f.has_employment=0, 'Missing Employment row', NULL),
+            IF(f.has_major=0, 'Major code is null', NULL),
+            IF(f.has_major=1 AND f.MAJR_CODE='CRWR', 'Creative Writing major (CRWR) not eligible for waiver', NULL),
+
+            IF(f.has_gpa=0, 'GPA is null', NULL),
+            IF(f.has_gpa=1 AND f.gpa_ok=0, 'GPA not eligible', NULL),
+
+            IF(f.Percent_Time_Attribute IS NULL, 'percent_time_attribute is null', NULL),
+            IF(f.Percent_Time_Attribute IS NOT NULL AND f.pct_ok=0, 'percent time > 50', NULL),
+
+            IF(f.has_minstart=0, 'minstart_date is null', NULL),
+            IF(f.has_minstart=1 AND f.minstart_ok=0, 'min start date not 2025-09-01', NULL),
+
+            IF(f.has_maxend=0, 'maxend_date is null', NULL),
+            IF(f.has_maxend=1 AND f.maxend_ok=0, 'max end date before 2026-01-15', NULL),
+
+            IF(f.has_hours=0, 'total_enrolled_hours is null', NULL),
+            IF(f.has_hours=1 AND f.enroll_ok=0, 'hours/course pattern not satisfied', NULL),
+
+            IF(f.Total_Enrolled_hours = 3 AND f.EnrolledCourses IS NULL, 'no enrolled course values present', NULL)
+        )
+    END AS Reason
+
+FROM flags f
+ORDER BY f.SPRIDEN_ID, f.MaxEnd_Date DESC, f.MinStart_Date DESC, f.Employment_ID DESC;
+
+
+
