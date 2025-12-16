@@ -1,0 +1,30 @@
+import pandas as pd
+from sqlalchemy import create_engine
+from configobj import ConfigObj
+
+# Load the configuration file
+conf = ConfigObj('config.ini')
+
+# Database connection using the `local_db` from config
+local = create_engine(f"mysql+pymysql://root:Dynamic63+99@127.0.0.1:3306/{conf['local_db']}")
+
+# Load the Excel file
+f1 = pd.read_excel("/Users/aaqilsheriff/Downloads/Testing TR-TW 12-15-25 - Tuition_Rates.xlsx", engine="openpyxl", skiprows=0)
+
+# Strip leading and trailing spaces from column names
+f1.columns = [col.strip() for col in f1.columns]
+
+# Optionally, replace spaces with underscores to avoid SQL issues
+f1.columns = [col.replace(" ", "_") for col in f1.columns]
+
+# Merge the data frames if needed
+f = f1  # Assuming you're working with a single DataFrame
+
+# Remove duplicates and NaN values
+f.drop_duplicates(keep="first", inplace=True)
+f.dropna(axis=0, how="all", inplace=True)
+
+# Load data into the database
+f.to_sql(name=conf['local_table_name'], con=local, if_exists='replace', index=False)
+
+print('Loading Successful!')
